@@ -1,5 +1,6 @@
 # Core PDF and Text Processing
 PyMuPDF>=1.24.0
+pdfplumber>=0.11.0
 langchain>=0.1.0
 langchain-text-splitters>=0.0.1
 
@@ -16,9 +17,12 @@ rapidfuzz>=3.0.0
 
 # Environment and Configuration
 python-dotenv>=1.0.0
+pyyaml>=6.0.0
+pydantic>=2.0.0
 
 # UI and Visualization
 streamlit>=1.30.0
+gradio>=4.0.0
 IPython>=8.12.0
 
 # Jupyter Notebook
