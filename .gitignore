@@ -1,0 +1,12 @@
+# Auto-generated local data
+contract_db/
+risk_analysis/
+temp_contract.pdf
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Environment / secrets
+.env

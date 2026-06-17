@@ -4,8 +4,13 @@ import json
 import re
 import os
 import glob
+from datetime import datetime
+import pandas as pd
+from dotenv import load_dotenv
 from groq import Groq
 import chromadb
+
+load_dotenv()
 
 st.set_page_config(
     page_title="Copilot for Lawyers",
@@ -386,6 +391,94 @@ def index_all_contracts(folder_path):
             log.append((filename, 0, str(e)))
     return len(pdf_files), log
 
+# ─── CROSS-DOCUMENT RISK PERSISTENCE ───────────────────────────────────────────
+# Risk analysis is otherwise only kept in session_state for the one contract being
+# reviewed. To show risk level / category / confidence for every document at once,
+# each document's analysis is persisted to ./risk_analysis/<filename>.json so the
+# Risk Overview view can aggregate across all of them.
+RISK_DB_FOLDER = "./risk_analysis"
+
+def _risk_path(filename):
+    os.makedirs(RISK_DB_FOLDER, exist_ok=True)
+    safe = re.sub(r'[^A-Za-z0-9._-]', '_', filename)
+    return os.path.join(RISK_DB_FOLDER, f"{safe}.json")
+
+def save_risk_analysis(filename, results):
+    try:
+        payload = {
+            "filename": filename,
+            "analyzed_at": datetime.now().isoformat(timespec="seconds"),
+            "results": results,
+        }
+        with open(_risk_path(filename), "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+def load_all_risk_analyses():
+    if not os.path.isdir(RISK_DB_FOLDER):
+        return []
+    analyses = []
+    for path in sorted(glob.glob(os.path.join(RISK_DB_FOLDER, "*.json"))):
+        try:
+            with open(path, encoding="utf-8") as f:
+                analyses.append(json.load(f))
+        except Exception:
+            continue
+    return analyses
+
+def delete_risk_analysis(filename):
+    try:
+        os.remove(_risk_path(filename))
+    except Exception:
+        pass
+
+def analyze_all_contracts(folder_path, progress=None):
+    """Read, index and risk-analyse every PDF in a folder, persisting each result."""
+    pdf_files = sorted(glob.glob(f"{folder_path}/*.pdf"))
+    log = []
+    for fi, pdf_path in enumerate(pdf_files):
+        filename = os.path.basename(pdf_path)
+        try:
+            contract_text, contract_pages = read_pdf(pdf_path)
+            contract_clauses = extract_clauses(contract_text, contract_pages)
+            results = []
+            for ci, clause in enumerate(contract_clauses):
+                result = analyze_clause(clause["text"])
+                result["clause_title"] = clause["title"]
+                result["clause_number"] = clause["number"]
+                result["page_number"] = clause.get("page_number", 1)
+                results.append(result)
+                if progress:
+                    progress(fi, len(pdf_files), filename, ci + 1, len(contract_clauses))
+            index_contract(contract_clauses, filename)
+            save_risk_analysis(filename, results)
+            n_risks = len([r for r in results if r.get("risk_level") != "none"])
+            log.append((filename, len(contract_clauses), n_risks, None))
+        except Exception as e:
+            log.append((filename, 0, 0, str(e)))
+    return len(pdf_files), log
+
+def build_risk_rows(analyses, include_none=False):
+    """Flatten persisted analyses into one row per clause for the cross-doc table."""
+    rows = []
+    for a in analyses:
+        for r in a.get("results", []):
+            level = r.get("risk_level", "none")
+            if not include_none and level == "none":
+                continue
+            rows.append({
+                "Document": a.get("filename", "—"),
+                "Clause": r.get("clause_title", "—"),
+                "Risk": level,
+                "Category": r.get("category") or "—",
+                "Confidence": r.get("confidence") or "not_specified",
+                "GDPR": r.get("gdpr_reference") or "",
+                "DORA": r.get("dora_reference") or "",
+                "Page": r.get("page_number", 1),
+            })
+    return rows
+
 def get_clause_by_number(clause_number, clauses):
     for c in clauses:
         if c["number"] == clause_number:
@@ -489,7 +582,7 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
 
-    view = st.radio("Navigation", ["Contract Review", "Document Search"], label_visibility="collapsed")
+    view = st.radio("Navigation", ["Contract Review", "Risk Overview", "Document Search"], label_visibility="collapsed")
 
     st.markdown("<hr style='border-color:#E8E6E0; margin:12px 0;'>", unsafe_allow_html=True)
     st.markdown('<p style="font-size:11px; color:#aaa; text-transform:uppercase; letter-spacing:0.05em; padding:0 4px; margin-bottom:4px;">Indexed documents</p>', unsafe_allow_html=True)
@@ -534,6 +627,7 @@ if view == "Contract Review":
                 result = analyze_clause(clause["text"])
                 result["clause_title"] = clause["title"]
                 result["clause_number"] = clause["number"]
+                result["page_number"] = clause.get("page_number", 1)
                 analysis_results.append(result)
                 progress.progress((i + 1) / len(clauses), text=f"Analyzing: {clause['title']}...")
             progress.empty()
@@ -544,6 +638,7 @@ if view == "Contract Review":
             st.session_state["chat_history"] = []
             st.session_state.pop("selected_clause", None)
             index_contract(clauses, uploaded_file.name)
+            save_risk_analysis(uploaded_file.name, analysis_results)
             st.rerun()
 
     if "results" in st.session_state:
@@ -683,7 +778,116 @@ if view == "Contract Review":
         st.markdown('<div style="background:white; border:1.5px dashed #D0CEC8; border-radius:12px; padding:48px; text-align:center; margin-top:16px;"><div style="font-size:40px; margin-bottom:12px;">📄</div><div style="font-size:14px; color:#888; margin-bottom:4px;">Upload a contract to get started</div><div style="font-size:12px; color:#bbb;">Supports PDF files</div></div>', unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# VIEW 2: DOCUMENT SEARCH
+# VIEW 2: RISK OVERVIEW (cross-document risk table)
+# ══════════════════════════════════════════════════════════════════════════════
+elif view == "Risk Overview":
+    st.markdown('<p style="font-size:18px; font-weight:500; color:#111; margin-bottom:4px;">Risk overview</p>', unsafe_allow_html=True)
+    st.markdown('<p style="font-size:13px; color:#888; margin-bottom:16px;">Risk level, category and confidence for every analysed clause across all documents.</p>', unsafe_allow_html=True)
+
+    col_f, col_b = st.columns([3, 1])
+    with col_f:
+        ro_folder = st.text_input("Folder", value=CONTRACTS_FOLDER, label_visibility="collapsed", key="ro_folder")
+    with col_b:
+        run_all = st.button("Analyze all contracts", type="primary", use_container_width=True)
+
+    if run_all:
+        progress = st.progress(0.0, text="Starting analysis...")
+        def _ro_progress(fi, n_files, fname, ci, n_clauses):
+            frac = (fi + ci / max(n_clauses, 1)) / max(n_files, 1)
+            progress.progress(min(frac, 1.0), text=f"{fname} — clause {ci}/{n_clauses}")
+        with st.spinner("Analyzing every clause in every contract..."):
+            n_files, log = analyze_all_contracts(ro_folder, progress=_ro_progress)
+        progress.empty()
+        if n_files == 0:
+            st.error("No PDF files found in that folder.")
+        else:
+            for fname, n_clauses, n_risks, err in log:
+                if err:
+                    st.warning(f"Error — {fname}: {err}")
+                else:
+                    st.success(f"{fname}: {n_clauses} clauses analysed, {n_risks} risks found")
+
+    analyses = load_all_risk_analyses()
+
+    if not analyses:
+        st.markdown('<div style="background:white; border:1.5px dashed #D0CEC8; border-radius:12px; padding:48px; text-align:center; margin-top:16px;"><div style="font-size:40px; margin-bottom:12px;">📊</div><div style="font-size:14px; color:#888; margin-bottom:4px;">No analysed documents yet</div><div style="font-size:12px; color:#bbb;">Analyze a contract in Contract Review, or click "Analyze all contracts" above.</div></div>', unsafe_allow_html=True)
+    else:
+        all_rows = build_risk_rows(analyses, include_none=True)
+        m1, m2, m3, m4, m5, m6 = st.columns(6)
+        m1.metric("Documents", len(analyses))
+        m2.metric("High risk", len([r for r in all_rows if r["Risk"] == "high"]))
+        m3.metric("Medium risk", len([r for r in all_rows if r["Risk"] == "medium"]))
+        m4.metric("Low risk", len([r for r in all_rows if r["Risk"] == "low"]))
+        m5.metric("GDPR", len([r for r in all_rows if r["GDPR"]]))
+        m6.metric("DORA", len([r for r in all_rows if r["DORA"]]))
+
+        st.markdown("<hr style='border-color:#E8E6E0; margin:14px 0;'>", unsafe_allow_html=True)
+
+        all_docs = [a.get("filename", "—") for a in analyses]
+        fcol1, fcol2 = st.columns(2)
+        with fcol1:
+            sel_docs = st.multiselect("Documents", options=all_docs, default=all_docs, key="ro_docs")
+        with fcol2:
+            sel_levels = st.multiselect("Risk level", options=["high", "medium", "low", "none"],
+                                        default=["high", "medium", "low"], key="ro_levels")
+
+        rows = [r for r in all_rows
+                if r["Document"] in sel_docs and r["Risk"] in sel_levels]
+
+        st.markdown('<p style="font-size:11px; color:#aaa; text-transform:uppercase; letter-spacing:0.05em; margin:10px 0 8px;">Cross-document risk table</p>', unsafe_allow_html=True)
+
+        if not rows:
+            st.info("No clauses match the current filters.")
+        else:
+            order = {"high": 0, "medium": 1, "low": 2, "none": 3}
+            df = pd.DataFrame(rows)
+            df["_o"] = df["Risk"].map(order).fillna(3)
+            df = df.sort_values(["_o", "Document", "Page"]).drop(columns="_o").reset_index(drop=True)
+            df["Risk"] = df["Risk"].map({"high": "HIGH", "medium": "MEDIUM", "low": "LOW", "none": "none"}).fillna(df["Risk"])
+
+            def _risk_style(val):
+                key = str(val).lower()
+                bg = {"high": "#FDECEC", "medium": "#FFF4DB", "low": "#EAF3FF", "none": "#F0F2F5"}.get(key, "")
+                fg = {"high": "#8A1F1F", "medium": "#704400", "low": "#164A7A", "none": "#586579"}.get(key, "")
+                return f"background-color:{bg}; color:{fg}; font-weight:700;"
+
+            def _conf_style(val):
+                bg = {"found": "#EAF7F0", "uncertain": "#FFF4DB", "not_specified": "#F0F2F5"}.get(val, "")
+                fg = {"found": "#0B5A43", "uncertain": "#704400", "not_specified": "#586579"}.get(val, "")
+                return f"background-color:{bg}; color:{fg};"
+
+            styled = df.style.map(_risk_style, subset=["Risk"]).map(_conf_style, subset=["Confidence"])
+
+            st.dataframe(
+                styled,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Document": st.column_config.TextColumn("Document", width="medium"),
+                    "Clause": st.column_config.TextColumn("Clause", width="medium"),
+                    "Risk": st.column_config.TextColumn("Risk", width="small"),
+                    "Category": st.column_config.TextColumn("Category", width="medium"),
+                    "Confidence": st.column_config.TextColumn("Confidence", width="small"),
+                    "GDPR": st.column_config.TextColumn("GDPR", width="small"),
+                    "DORA": st.column_config.TextColumn("DORA", width="small"),
+                    "Page": st.column_config.NumberColumn("Page", width="small"),
+                },
+            )
+
+            dl, cap = st.columns([1, 3])
+            with dl:
+                st.download_button(
+                    "Download CSV",
+                    data=df.to_csv(index=False).encode("utf-8"),
+                    file_name="cross_document_risk_table.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
+            with cap:
+                st.markdown(f'<p style="font-size:12px; color:#888; margin-top:8px;">Showing {len(df)} clauses across {df["Document"].nunique()} documents.</p>', unsafe_allow_html=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# VIEW 3: DOCUMENT SEARCH
 # ══════════════════════════════════════════════════════════════════════════════
 else:
     st.markdown('<p style="font-size:18px; font-weight:500; color:#111; margin-bottom:4px;">Document search</p>', unsafe_allow_html=True)

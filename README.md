@@ -55,7 +55,7 @@ The application will open automatically in your browser at `http://localhost:850
 
 ## Application Overview
 
-The application has two main views, selectable from the left sidebar: **Contract Review** and **Document Search**.
+The application has three main views, selectable from the left sidebar: **Contract Review**, **Risk Overview**, and **Document Search**.
 
 ---
 
@@ -118,6 +118,27 @@ Chat history is preserved per clause — if you switch to another clause and ret
 ### Highlighted Contract
 
 At the bottom of the page, the full contract text is displayed with all risky excerpts highlighted. Colours correspond to risk level: red for high, amber for medium, blue for low. Hovering over a highlighted passage shows the risk category and explanation as a tooltip. When you select a clause using **Details →**, the highlighted contract automatically scrolls to and outlines that clause.
+
+---
+
+## Risk Overview
+
+This view aggregates the risk analysis of **every analysed document into a single cross-document table**, so reviewers can compare risk level, category and confidence across a whole portfolio of contracts at once rather than one document at a time.
+
+### How risk data is persisted
+
+Risk analysis was previously held only in session state for the contract currently being reviewed. Each analysis is now also written to `./risk_analysis/<filename>.json` — both when a single contract is analysed in **Contract Review** and when contracts are analysed in bulk here. The Risk Overview view loads all of those files and aggregates them.
+
+### Populating the table
+
+- **Analyze all contracts** — point the folder field at a directory of PDFs (defaults to `sample_contracts`) and click the button. Every PDF is read, split into clauses, indexed into the vector store, and risk-analysed clause by clause, with a progress bar across files and clauses. Each document's results are saved to disk.
+- Any contract analysed individually in **Contract Review** also appears here automatically.
+
+### The cross-document table
+
+The table has one row per flagged clause with the columns **Document**, **Clause**, **Risk**, **Category**, **Confidence**, **GDPR**, **DORA**, and **Page**. The risk and confidence cells are colour-coded (red / amber / blue for high / medium / low risk; green / amber / grey for found / uncertain / not-specified confidence). Rows are sorted by severity.
+
+Above the table, summary metrics show the number of documents, high / medium / low risk counts, and GDPR / DORA reference counts across all documents. Two filters let you narrow the table by document and by risk level (no-risk clauses are hidden by default). The filtered table can be exported with **Download CSV**.
 
 ---
 
@@ -222,7 +243,8 @@ copilot_lawyers/
 │   ├── 04_SaaS_Subscription_CloudLedger.pdf
 │   ├── 05_Data_Processing_Agreement_MedStore.pdf
 │   └── 06_Equipment_Lease_Agreement_OfficeMachines.pdf
-└── contract_db/            # ChromaDB local database (auto-generated, not tracked in git)
+├── contract_db/            # ChromaDB local database (auto-generated, not tracked in git)
+└── risk_analysis/          # Per-document risk analysis JSON, powers Risk Overview (auto-generated, not tracked in git)
 ```
 
 ---
