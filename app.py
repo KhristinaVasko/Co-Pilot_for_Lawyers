@@ -201,7 +201,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "YOUR API")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 CONTRACTS_FOLDER = "./sample_contracts"
 
 client = Groq(api_key=GROQ_API_KEY)
