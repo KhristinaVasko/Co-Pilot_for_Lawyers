@@ -186,6 +186,7 @@ These article texts are included in the prompts so the model can cite specific r
 copilot_lawyers/
 ├── app.py                  # Main Streamlit application
 ├── requirements.txt        # Python dependencies
+├── .env.example            # API key template
 ├── README.md               # This file
 ├── sample_contracts/       # Sample PDF contracts for testing
 │   ├── 01_Service_Agreement_DataFlow_LegalCorp.pdf
